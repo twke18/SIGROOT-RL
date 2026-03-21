@@ -1,10 +1,10 @@
 env:
-  name: HalfCheetah-v4
+  name: Humanoid-v4
   num_envs: 16
   seed: 42
 
 policy:
-  hidden_dims: [256, 256]
+  hidden_dims: [512, 512]
   activation: tanh
   num_flow_samples: 8
   flow_steps: 10
@@ -21,9 +21,10 @@ algorithm:
   max_grad_norm: 0.5
 
 training:
-  total_epochs: 500
+  total_epochs: 1000
   rollout_steps: 2048
   test_interval: 10
   test_episodes: 5
   video_interval: 50
   checkpoint_interval: 50
+  success_threshold: 3000.0

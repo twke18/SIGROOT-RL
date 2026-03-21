@@ -1,0 +1,28 @@
+env:
+  name: HalfCheetah-v4
+  num_envs: 16
+  seed: 42
+
+policy:
+  hidden_dims: [256, 256]
+  activation: tanh
+
+algorithm:
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_epsilon: 0.2
+  entropy_coef: 0.0
+  value_loss_coef: 0.5
+  epochs_per_update: 10
+  minibatch_size: 256
+  learning_rate: 3.0e-4
+  max_grad_norm: 0.5
+
+training:
+  total_epochs: 500
+  rollout_steps: 2048
+  test_interval: 10
+  test_episodes: 5
+  video_interval: 50
+  checkpoint_interval: 50
+  success_threshold: 300.0

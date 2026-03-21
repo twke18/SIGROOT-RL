@@ -1,15 +1,18 @@
 """
-Runner script for HalfCheetah RL training and testing.
+Runner script for Mujoco RL training and testing (HalfCheetah, Humanoid, HumanoidStandup).
 
 Usage:
     # Train with PPO
-    python runner.py --config configurations/PPO.yaml
+    python runner.py --config configurations/HalfCheetah_PPO.yaml
+    python runner.py --config configurations/Humanoid_PPO.yaml
+    python runner.py --config configurations/HumanoidStandup_PPO.yaml
 
     # Train with FPO
-    python runner.py --config configurations/FPO.yaml
+    python runner.py --config configurations/HalfCheetah_FPO.yaml
+    python runner.py --config configurations/Humanoid_FPO.yaml
 
     # Test a saved checkpoint
-    python runner.py --config configurations/PPO.yaml --mode test --checkpoint checkpoints/PPO_epoch0500.pt
+    python runner.py --config configurations/HalfCheetah_PPO.yaml --mode test --checkpoint checkpoints/PPO_HalfCheetah_epoch0500.pt
 """
 import argparse
 import os
@@ -20,7 +23,7 @@ import numpy as np
 import torch
 import yaml
 
-from envs.half_cheetah import HalfCheetahEnv
+from envs.mujoco_env import MujocoEnv
 from utils.rollout import RolloutBuffer
 from utils.logger import Logger
 
@@ -91,7 +94,7 @@ def build_algorithm(algo: str, policy, cfg: dict, device: torch.device):
         )
 
 
-def collect_video(policy, env_wrapper: HalfCheetahEnv, device: torch.device, max_steps: int = 1000) -> list:
+def collect_video(policy, env_wrapper: MujocoEnv, device: torch.device, max_steps: int = 1000) -> list:
     """Roll out one episode with the current policy and collect RGB frames."""
     render_env = env_wrapper.make_render_env()
     obs, _ = render_env.reset()
@@ -113,19 +116,18 @@ def collect_video(policy, env_wrapper: HalfCheetahEnv, device: torch.device, max
 
 def run_test(
     policy,
-    env_wrapper: HalfCheetahEnv,
+    env_wrapper: MujocoEnv,
     device: torch.device,
     num_episodes: int = 5,
     max_steps: int = 1000,
+    success_threshold: float = 300.0,
 ):
     """
     Run num_episodes test episodes sequentially.
     Returns (avg_accumulated_reward, success_rate).
 
-    HalfCheetah has no binary success criterion; we treat episodes where the
-    accumulated reward exceeds a threshold (300) as "successful".
+    success_threshold is environment-specific and read from the training config.
     """
-    SUCCESS_THRESHOLD = 300.0
     render_env = env_wrapper.make_render_env()
     rewards = []
     for _ in range(num_episodes):
@@ -144,7 +146,7 @@ def run_test(
     render_env.close()
 
     avg_reward = float(np.mean(rewards))
-    success_rate = float(np.mean([r >= SUCCESS_THRESHOLD for r in rewards]))
+    success_rate = float(np.mean([r >= success_threshold for r in rewards]))
     return avg_reward, success_rate
 
 
@@ -157,10 +159,11 @@ def train(cfg: dict, algo: str, device: torch.device, checkpoint_path: str | Non
     train_cfg = cfg["training"]
     alg_cfg = cfg["algorithm"]
 
-    env = HalfCheetahEnv(env_cfg["name"], env_cfg["num_envs"], seed=env_cfg.get("seed", 42))
+    env = MujocoEnv(env_cfg["name"], env_cfg["num_envs"], seed=env_cfg.get("seed", 42))
     policy = build_policy(algo, env.obs_dim, env.act_dim, cfg, device)
     algorithm = build_algorithm(algo, policy, cfg, device)
-    logger = Logger(algo)
+    env_label = env_cfg["name"].split("-")[0]
+    logger = Logger(f"{algo}_{env_label}")
 
     os.makedirs("checkpoints", exist_ok=True)
     start_epoch = 0
@@ -251,7 +254,8 @@ def train(cfg: dict, algo: str, device: torch.device, checkpoint_path: str | Non
         if (epoch + 1) % train_cfg["test_interval"] == 0:
             policy.eval()
             avg_test_reward, success_rate = run_test(
-                policy, env, device, num_episodes=train_cfg["test_episodes"]
+                policy, env, device, num_episodes=train_cfg["test_episodes"],
+                success_threshold=train_cfg.get("success_threshold", 300.0),
             )
             logger.log_test(avg_test_reward, success_rate, epoch)
             print(
@@ -288,7 +292,7 @@ def test_only(cfg: dict, algo: str, device: torch.device, checkpoint_path: str):
     env_cfg = cfg["env"]
     train_cfg = cfg["training"]
 
-    env = HalfCheetahEnv(env_cfg["name"], 1, seed=env_cfg.get("seed", 0))
+    env = MujocoEnv(env_cfg["name"], 1, seed=env_cfg.get("seed", 0))
     policy = build_policy(algo, env.obs_dim, env.act_dim, cfg, device)
 
     ckpt = torch.load(checkpoint_path, map_location=device)
@@ -296,9 +300,11 @@ def test_only(cfg: dict, algo: str, device: torch.device, checkpoint_path: str):
     policy.eval()
     print(f"Loaded checkpoint: {checkpoint_path}")
 
-    logger = Logger(algo)
+    env_label = env_cfg["name"].split("-")[0]
+    logger = Logger(f"{algo}_{env_label}")
     avg_reward, success_rate = run_test(
-        policy, env, device, num_episodes=train_cfg.get("test_episodes", 5)
+        policy, env, device, num_episodes=train_cfg.get("test_episodes", 5),
+        success_threshold=train_cfg.get("success_threshold", 300.0),
     )
     print(f"[{algo}] Test reward: {avg_reward:.2f} | success rate: {success_rate:.2%}")
 
@@ -314,7 +320,7 @@ def test_only(cfg: dict, algo: str, device: torch.device, checkpoint_path: str):
 # ---------------------------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser(description="HalfCheetah RL training/testing runner")
+    parser = argparse.ArgumentParser(description="Mujoco RL training/testing runner")
     parser.add_argument("--config", required=True, help="Path to YAML config file")
     parser.add_argument("--mode", choices=["train", "test"], default="train")
     parser.add_argument("--checkpoint", default=None, help="Checkpoint .pt file to load")

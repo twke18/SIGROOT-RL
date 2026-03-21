@@ -6,16 +6,18 @@ env:
 policy:
   hidden_dims: [256, 256]
   activation: tanh
+  num_flow_samples: 8
+  flow_steps: 10
 
 algorithm:
   gamma: 0.99
   gae_lambda: 0.95
-  clip_epsilon: 0.2
-  entropy_coef: 0.0
   value_loss_coef: 0.5
-  epochs_per_update: 10
+  clip_eps: 0.05
+  n_mc: 8
+  epochs_per_update: 5
   minibatch_size: 256
-  learning_rate: 3.0e-4
+  learning_rate: 1.0e-4
   max_grad_norm: 0.5
 
 training:
@@ -25,3 +27,4 @@ training:
   test_episodes: 5
   video_interval: 50
   checkpoint_interval: 50
+  success_threshold: 300.0

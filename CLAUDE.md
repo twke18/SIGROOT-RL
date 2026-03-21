@@ -1,12 +1,15 @@
 # Reinforcement Learning for Robot Learning
 
-This is a code base for training half-cheeta locomotion with reinforcement learning.
+This is a code base for training Mujoco locomotion tasks with reinforcement learning.  Supported environments: HalfCheetah, Humanoid, and HumanoidStandup.
 
 ## Setup
 
 To set up the code base, the following components are needed:
 
-1. **Gym environment**: A simulation environment supported by Mujoco for half-cheeta robot locomotion.  Read [this website](https://gymnasium.farama.org/environments/mujoco/half_cheetah/) for the introduction of the gym environment.
+1. **Gym environment**: A simulation environment supported by Mujoco.  The following environments are supported:
+   - HalfCheetah: [https://gymnasium.farama.org/environments/mujoco/half_cheetah/](https://gymnasium.farama.org/environments/mujoco/half_cheetah/)
+   - Humanoid: [https://gymnasium.farama.org/environments/mujoco/humanoid/](https://gymnasium.farama.org/environments/mujoco/humanoid/)
+   - HumanoidStandup: [https://gymnasium.farama.org/environments/mujoco/humanoid_standup/](https://gymnasium.farama.org/environments/mujoco/humanoid_standup/)
 2. **RL algorithms**: Reinforcement learning frameworks that train policies to complete the task.  We consider two algorithms: Proximal Policy Optimization (PPO) and Flow Matching Policy Gradients (FPO).  Read [this repo](https://github.com/akanazawa/fpo/tree/main) that implmenets both algorithms.
 3. **Robot policies**: Robot policies are neural networks.  Read @./instructions/RobotPolicy.md for more context.
 4. **Runner script**: A script that create environments, run RL algorithms for training, and test the performance of trained policies.  Read [rl_games](https://github.com/Denys88/rl_games) that coordinates training-testing pipeline with RL algorithms.
@@ -50,8 +53,8 @@ All numerical results should be logged with tensorboard. All visual results shou
 
 1. Check the dependency requirements from `Mujoco`, `rl_games` and `pytorch`
 2. Propose the best version of these packages which enable simple installation and minimal dependencies
-3. Create an initial runner script at `./runner.py`. The script should support execution of both PPO and FPO algorithms. Therefore, create the corresponding configuration files in `./configurations/PPO.yaml` and `./configurations/FPO.yaml`.
-4. Initiate HalfCheeta Environment from Mujoco
+3. Create an initial runner script at `./runner.py`. The script should support execution of both PPO and FPO algorithms across all environments. Configuration files follow the naming convention `./configurations/<ENV>_<ALGO>.yaml` (e.g., `HalfCheetah_PPO.yaml`, `Humanoid_FPO.yaml`).
+4. Initiate Mujoco environments (HalfCheetah, Humanoid, HumanoidStandup)
 5. Render videos with the environment by performing random actions
 6. Implement training and testing pipeline based on `rl_games`
 7. Implement PPO algorithm and the Gaussian policy based on `rl_games`
