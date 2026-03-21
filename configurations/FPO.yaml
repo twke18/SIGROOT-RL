@@ -13,7 +13,8 @@ algorithm:
   gamma: 0.99
   gae_lambda: 0.95
   value_loss_coef: 0.5
-  flow_loss_coef: 0.5
+  clip_eps: 0.05
+  n_mc: 8
   epochs_per_update: 5
   minibatch_size: 256
   learning_rate: 1.0e-4

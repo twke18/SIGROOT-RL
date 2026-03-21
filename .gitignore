@@ -2,6 +2,8 @@
 runs/
 videos/
 .claude/
+checkpoints/
+support_information/
 
 # Cache files
 *.pyc

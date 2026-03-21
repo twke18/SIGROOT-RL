@@ -1,13 +1,23 @@
 """Flow Matching Policy Gradients (FPO) algorithm.
 
-FPO replaces the Gaussian policy gradient step with:
-1. A policy gradient update using multiple action samples drawn from the flow policy.
-2. A flow matching loss to improve the flow network itself (distillation of the
-   policy-gradient signal back into the generative model).
+Implements Algorithm 1 from "Flow Matching Policy Gradients" (McAllister et al., 2025).
 
-The value function is updated with the same GAE-based critic loss as PPO.
+The key idea is to replace PPO's intractable likelihood ratio with a proxy ratio
+computed from the conditional flow matching (CFM) loss:
 
-Reference: akanazawa/fpo
+    r̂_θ = exp( -1/N_mc * Σ_i ( ℓ_θ(τ_i, ε_i) - ℓ_{θ_old}(τ_i, ε_i) ) )
+
+where ℓ_θ(τ, ε) = ||v̂_θ(x_t; τ; obs) - (a - ε)||²  and  x_t = (1-τ)ε + τa.
+
+This ratio is used in the standard PPO-clip surrogate objective:
+
+    L^FPO(θ) = min( r̂_θ * Â,  clip(r̂_θ, 1-ε_clip, 1+ε_clip) * Â )
+
+The value function is updated identically to standard PPO.
+
+The (τ_i, ε_i) pairs and the old-policy loss ℓ_{θ_old}(τ_i, ε_i) are sampled
+and cached during rollout collection (via FlowPolicy.sample_mc_pairs), so the
+same noise inputs are reused across all optimisation epochs.
 """
 import torch
 import torch.nn as nn
@@ -26,7 +36,8 @@ class FPO:
         policy: nn.Module,
         learning_rate: float = 3e-4,
         value_loss_coef: float = 0.5,
-        flow_loss_coef: float = 1.0,
+        clip_eps: float = 0.05,
+        n_mc: int = 8,
         epochs_per_update: int = 10,
         minibatch_size: int = 256,
         max_grad_norm: float = 0.5,
@@ -34,7 +45,8 @@ class FPO:
     ):
         self.policy = policy
         self.value_loss_coef = value_loss_coef
-        self.flow_loss_coef = flow_loss_coef
+        self.clip_eps = clip_eps
+        self.n_mc = n_mc
         self.epochs_per_update = epochs_per_update
         self.minibatch_size = minibatch_size
         self.max_grad_norm = max_grad_norm
@@ -42,26 +54,37 @@ class FPO:
 
         self.optimizer = torch.optim.Adam(policy.parameters(), lr=learning_rate)
 
-    def update(self, obs, actions, old_log_probs, returns, advantages):
+    def update(
+        self,
+        obs,
+        actions,
+        old_log_probs,
+        returns,
+        advantages,
+        mc_taus,
+        mc_epsilons,
+        old_fpo_losses,
+    ):
         """
         Run FPO update over the collected rollout.
 
-        Policy gradient step:
-          - Sample K actions per obs from the current flow policy.
-          - Use the advantage to weight the flow matching loss toward
-            high-advantage actions (behaviour cloning toward best actions).
-
         Args:
             obs:           (N, obs_dim)
-            actions:       (N, act_dim)   — actions actually taken during rollout
-            old_log_probs: (N,)           — unused by FPO (kept for API compatibility)
+            actions:       (N, act_dim)   — actions taken during rollout
+            old_log_probs: (N,)           — unused (kept for API compatibility)
             returns:       (N,)
-            advantages:    (N,)           — already normalised
+            advantages:    (N,)           — normalised advantages
+            mc_taus:       (N, n_mc, 1)   — cached flow timesteps from rollout
+            mc_epsilons:   (N, n_mc, act_dim) — cached noise from rollout
+            old_fpo_losses:(N,)           — sum of ℓ_{θ_old} over n_mc pairs
 
         Returns:
             (mean_actor_loss, mean_critic_loss) over all minibatches
         """
-        dataset = TensorDataset(obs, actions, returns, advantages)
+        dataset = TensorDataset(
+            obs, actions, returns, advantages,
+            mc_taus, mc_epsilons, old_fpo_losses,
+        )
         loader = DataLoader(dataset, batch_size=self.minibatch_size, shuffle=True)
 
         total_actor_loss = 0.0
@@ -70,39 +93,44 @@ class FPO:
 
         for _ in range(self.epochs_per_update):
             for batch in loader:
-                b_obs, b_actions, b_returns, b_adv = batch
+                b_obs, b_actions, b_returns, b_adv, b_taus, b_eps, b_old_loss = batch
                 B = b_obs.shape[0]
 
-                # ---------------------------------------------------
-                # 1. Critic loss: MSE on value estimates
-                # ---------------------------------------------------
+                # -----------------------------------------------------------
+                # 1. Critic loss: MSE on value estimates (same as PPO)
+                # -----------------------------------------------------------
                 values = self.policy.value_head(
                     self.policy.critic_backbone(b_obs)
                 ).squeeze(-1)
                 critic_loss = nn.functional.mse_loss(values, b_returns)
 
-                # ---------------------------------------------------
-                # 2. Actor loss: advantage-weighted flow matching loss
+                # -----------------------------------------------------------
+                # 2. Compute current FPO loss on the stored (τ, ε) pairs
                 #
-                # We use the rollout actions as targets weighted by
-                # their normalised advantages (positive-only weighting
-                # to clone toward high-reward trajectories).
-                # ---------------------------------------------------
-                # Keep only positive-advantage samples for cloning
-                pos_mask = b_adv > 0
-                if pos_mask.sum() < 2:
-                    # Skip actor update if no positive-advantage samples
-                    flow_loss = torch.tensor(0.0, device=self.device)
-                else:
-                    pos_obs = b_obs[pos_mask]
-                    pos_actions = b_actions[pos_mask]
-                    pos_weights = b_adv[pos_mask]
-                    pos_weights = pos_weights / (pos_weights.sum() + 1e-8)
+                # Flatten (B, n_mc, *) → (B*n_mc, *) for vectorised eval.
+                # -----------------------------------------------------------
+                obs_exp = b_obs.unsqueeze(1).expand(B, self.n_mc, b_obs.shape[-1]).reshape(B * self.n_mc, -1)
+                act_exp = b_actions.unsqueeze(1).expand(B, self.n_mc, b_actions.shape[-1]).reshape(B * self.n_mc, -1)
+                taus_flat = b_taus.reshape(B * self.n_mc, 1)
+                eps_flat = b_eps.reshape(B * self.n_mc, -1)
 
-                    flow_loss_per = self._per_sample_flow_loss(pos_obs, pos_actions)
-                    flow_loss = (flow_loss_per * pos_weights).sum()
+                x_t = (1 - taus_flat) * eps_flat + taus_flat * act_exp
+                target_v = act_exp - eps_flat
+                pred_v = self.policy.vector_field(obs_exp, x_t, taus_flat)
 
-                actor_loss = self.flow_loss_coef * flow_loss
+                per_sample = ((pred_v - target_v) ** 2).mean(dim=-1)       # (B*n_mc,)
+                current_fpo_loss = per_sample.reshape(B, self.n_mc).sum(dim=1)  # (B,)
+
+                # -----------------------------------------------------------
+                # 3. FPO ratio and PPO-clip surrogate (Algorithm 1, lines 9-10)
+                #
+                #   r̂_θ = exp( -1/N_mc * (ℓ_θ - ℓ_{θ_old}) )
+                #   L^FPO = min( r̂_θ * Â,  clip(r̂_θ, 1±ε) * Â )
+                # -----------------------------------------------------------
+                ratio = torch.exp(-(current_fpo_loss - b_old_loss) / self.n_mc)  # (B,)
+                surr1 = ratio * b_adv
+                surr2 = torch.clamp(ratio, 1.0 - self.clip_eps, 1.0 + self.clip_eps) * b_adv
+                actor_loss = -torch.min(surr1, surr2).mean()
 
                 loss = actor_loss + self.value_loss_coef * critic_loss
 
@@ -116,21 +144,3 @@ class FPO:
                 n_batches += 1
 
         return total_actor_loss / n_batches, total_critic_loss / n_batches
-
-    def _per_sample_flow_loss(
-        self, obs: torch.Tensor, actions_1: torch.Tensor
-    ) -> torch.Tensor:
-        """
-        Compute per-sample CFM loss (not yet reduced).
-
-        Returns shape (B,).
-        """
-        B = obs.shape[0]
-        x_0 = torch.randn_like(actions_1)
-        t = torch.rand(B, 1, device=obs.device)
-
-        x_t = (1 - t) * x_0 + t * actions_1
-        target_v = actions_1 - x_0
-
-        pred_v = self.policy.vector_field(obs, x_t, t)
-        return ((pred_v - target_v) ** 2).mean(dim=-1)  # (B,)

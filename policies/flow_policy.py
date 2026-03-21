@@ -139,6 +139,47 @@ class FlowPolicy(nn.Module):
     def get_value(self, obs: torch.Tensor) -> torch.Tensor:
         return self.value_head(self.critic_backbone(obs)).squeeze(-1)
 
+    @torch.no_grad()
+    def sample_mc_pairs(
+        self,
+        obs: torch.Tensor,
+        actions: torch.Tensor,
+        n_mc: int,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Sample N_mc (τ, ε) pairs and compute the old-policy FPO loss sum.
+        Called during rollout to cache data needed for the FPO ratio.
+
+        Args:
+            obs:     (B, obs_dim)
+            actions: (B, act_dim)  — actions taken in the environment
+            n_mc:    number of MC samples per action
+
+        Returns:
+            mc_taus:      (B, n_mc, 1)
+            mc_epsilons:  (B, n_mc, act_dim)
+            old_fpo_loss: (B,)  — sum of ℓ_θ over n_mc samples
+        """
+        B = obs.shape[0]
+        mc_taus = torch.rand(B, n_mc, 1, device=obs.device)
+        mc_epsilons = torch.randn(B, n_mc, self.act_dim, device=obs.device)
+
+        # Flatten for vectorised vector-field evaluation
+        obs_exp = obs.unsqueeze(1).expand(B, n_mc, self.obs_dim).reshape(B * n_mc, self.obs_dim)
+        act_exp = actions.unsqueeze(1).expand(B, n_mc, self.act_dim).reshape(B * n_mc, self.act_dim)
+        taus_flat = mc_taus.reshape(B * n_mc, 1)
+        eps_flat = mc_epsilons.reshape(B * n_mc, self.act_dim)
+
+        x_t = (1 - taus_flat) * eps_flat + taus_flat * act_exp
+        target_v = act_exp - eps_flat
+        pred_v = self.vector_field(obs_exp, x_t, taus_flat)
+
+        # ℓ_θ(τ_i, ε_i) = mean over act_dim of squared error, then sum over n_mc
+        per_sample = ((pred_v - target_v) ** 2).mean(dim=-1)   # (B*n_mc,)
+        old_fpo_loss = per_sample.reshape(B, n_mc).sum(dim=1)  # (B,)
+
+        return mc_taus, mc_epsilons, old_fpo_loss
+
     def compute_flow_loss(
         self,
         obs: torch.Tensor,

@@ -85,7 +85,8 @@ def build_algorithm(algo: str, policy, cfg: dict, device: torch.device):
     else:
         from algorithms.fpo import FPO
         return FPO(
-            flow_loss_coef=alg_cfg.get("flow_loss_coef", 1.0),
+            clip_eps=alg_cfg.get("clip_eps", 0.05),
+            n_mc=alg_cfg.get("n_mc", 8),
             **common,
         )
 
@@ -188,10 +189,19 @@ def train(cfg: dict, algo: str, device: torch.device, checkpoint_path: str | Non
         # ----------------------------------------------------------------
         policy.eval()
         buffer.reset()
+        if algo == "FPO":
+            fpo_mc_taus, fpo_mc_epsilons, fpo_old_losses = [], [], []
         for _ in range(train_cfg["rollout_steps"]):
             obs_t = torch.tensor(obs, dtype=torch.float32, device=device)
             with torch.no_grad():
                 action, log_prob, value = policy(obs_t)
+                if algo == "FPO":
+                    mc_taus, mc_epsilons, old_loss = policy.sample_mc_pairs(
+                        obs_t, action, n_mc=algorithm.n_mc
+                    )
+                    fpo_mc_taus.append(mc_taus.cpu())
+                    fpo_mc_epsilons.append(mc_epsilons.cpu())
+                    fpo_old_losses.append(old_loss.cpu())
 
             action_np = action.cpu().numpy()
             next_obs, reward, done, _ = env.step(action_np)
@@ -221,9 +231,17 @@ def train(cfg: dict, algo: str, device: torch.device, checkpoint_path: str | Non
         # ----------------------------------------------------------------
         policy.train()
         obs_t, actions_t, log_probs_t, returns_t, advantages_t = buffer.get_tensors()
-        actor_loss, critic_loss = algorithm.update(
-            obs_t, actions_t, log_probs_t, returns_t, advantages_t
-        )
+        if algo == "FPO":
+            actor_loss, critic_loss = algorithm.update(
+                obs_t, actions_t, log_probs_t, returns_t, advantages_t,
+                mc_taus=torch.cat(fpo_mc_taus).to(device),
+                mc_epsilons=torch.cat(fpo_mc_epsilons).to(device),
+                old_fpo_losses=torch.cat(fpo_old_losses).to(device),
+            )
+        else:
+            actor_loss, critic_loss = algorithm.update(
+                obs_t, actions_t, log_probs_t, returns_t, advantages_t
+            )
         logger.log_train_losses(actor_loss, critic_loss, epoch)
         print(f"[{algo}] Epoch {epoch:4d} | Actor loss: {actor_loss:.4f} | Critic loss: {critic_loss:.4f}", flush=True)
 
