@@ -1,0 +1,7 @@
+# Cache directories
+runs/
+videos/
+.claude/
+
+# Cache files
+*.pyc

@@ -22,15 +22,16 @@ Mimize the list of required dependencies.
 
 ## Trainging and testing pipeline
 
-1. Initiate multiple environments parallely
+1. Initiate multiple environments parallely. The environment can have random initial states
 2. Build the robot policy
 3. Training
     - Collecting rollout phase: sample random actions with the current policy and interact within environments to collect state-action-reward information
     - Learning phase: train the policy with the collected rollouts using either PPO / FPO algorithm
 4. Testing
-    - Reset all environments to initial states
+    - Reset all environments to initial states 
     - Rollout trajectories with the current policy
     - Report the accumulated reward and the final task success rate
+5. Repeat step 3 and 4 for multiple rounds.
 
 ## Logging results
 
