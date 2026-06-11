@@ -1,6 +1,6 @@
 env:
   name: Humanoid-v4
-  num_envs: 16
+  num_envs: 64
   seed: 42
 
 policy:

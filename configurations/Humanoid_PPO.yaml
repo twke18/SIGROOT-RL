@@ -1,6 +1,6 @@
 env:
   name: Humanoid-v4
-  num_envs: 16
+  num_envs: 64
   seed: 42
 
 policy:
@@ -13,9 +13,9 @@ algorithm:
   clip_epsilon: 0.2
   entropy_coef: 0.0
   value_loss_coef: 0.5
-  epochs_per_update: 10
+  epochs_per_update: 5
   minibatch_size: 256
-  learning_rate: 3.0e-4
+  learning_rate: 1.0e-4
   max_grad_norm: 0.5
 
 training:
